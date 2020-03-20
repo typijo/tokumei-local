@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+        <title>ローカル匿名化テスト</title>
+        <!-- Load TensorFlow.js -->
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"> </script>
+
+
+        <!-- Place your code in the script tag below. You can also use an external .js file -->
+        <script>
+            let model = null;
+            let vocab = ivocab = null;
+
+            // 単語リストの読み込み
+            const loadVocab = () => {
+                let http = new XMLHttpRequest();
+                http.open("GET", "https://raw.githubusercontent.com/typijo/tokumei-local/master/vocab.json", false);
+                http.send();
+                
+                let ivocab = JSON.parse(http.responseText);
+                let vocab = {}
+                for (let idx in ivocab) {
+                    const char = ivocab[idx];
+                    vocab[char] = Number.parseInt(idx);
+                }
+
+                return [vocab, ivocab];
+            };
+
+            // モデルの読み込み
+            const loadModel = async () => {
+                model = await tf.loadLayersModel("https://raw.githubusercontent.com/typijo/tokumei-local/master/model_tfjs/model.json");
+                model.summary();
+
+                let vocabdata = loadVocab();
+                vocab = vocabdata[0];
+                ivocab = vocabdata[1];
+            };
+
+            // 入力文字列の正規化
+            const z2h = (text) => {
+                return text.replace(/[！＂＃＄％＆＇（）＊＋，－．／０１２３４５６７８９：；＜＝＞？＠ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ［＼］＾＿｀>？＠ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ｛｜｝～]/g, (c) => {
+                    return String.fromCharCode(c.charCodeAt(0) - 0xFEE0);
+                });
+            };
+            const remove_succ_spaces = (text) => {
+                return text.replace(/([ 　])[ 　]+/g, (s) => {
+                    return " "
+                });
+            };
+            const normalize = (text) => {
+                text = z2h(text);                   // 全角->半角
+                text = remove_succ_spaces(text);    // 連続するスペースの削除
+                text = text.toLowerCase();          // 小文字化
+
+                return text;
+            };
+
+            // 文字列からIDへの変換
+            const encode = (text) => {
+                let t = [];
+                for (let idx in text) {
+                    let c = vocab[text[idx]];
+                    if (c === undefined) {
+                        c = vocab["[UNK]"];
+                    }
+                    t.push(c);
+                }
+
+                for (let i = 0; i < 256 - t.length; i++) {
+                    t.push(vocab["[EOS]"]);
+                }
+                return t;
+            };
+
+            // 匿名化タイプから名称への変換
+            const type2name = [
+                "なし", "人", "団体", "住所", "地名", "時間",
+                "価格", "割合", "番号", "url"
+            ];
+
+            // 匿名化タイプの予測結果からアノテーションを作成
+            const annotate = (text, preds) => {
+                let offset = 0;
+                let annotype = 0;
+                let annos = 0;
+                for (let i = 0; i < preds.length; i++) {
+                    const predi = preds[i];
+
+                    if (predi !== annotype) {
+                        if (annotype !== 0) {
+                            const annol = "(" + type2name[annotype] + ":";
+                            const annor = ")";
+                            text = text.slice(0, annos+offset)
+                                + annol
+                                + text.slice(annos+offset, i+offset)
+                                + annor
+                                + text.slice(i+offset)
+                            offset += annol.length + annor.length;
+                        }
+                        annotype = predi;
+                        annos = i;
+                    }
+                }
+
+                return text;
+            };
+
+            // 匿名化エンジンを実行
+            const anonymize = () => {
+                let text = document.getElementById("tokumei_target").value;
+                if (text.length === 0) {
+                    alert("匿名化する文がありません。");
+                    return;
+                }
+
+                text = normalize(text); // 正規化
+
+                let input = encode(text); // IDに変換
+                let input_tensor = tf.tensor([input]); // tensorに変換
+
+                tf.tidy(() => { // 匿名化タイプを予測
+                    let probs = model.predict(input_tensor);
+                    probs = probs.squeeze();
+                    return probs.argMax(-1);
+                }).array().then((preds) => { // 予測結果
+                    let annotated_text = annotate(text, preds);
+                    console.log(preds);
+                    document.getElementById("tokumei_go").value = annotated_text; 
+                });
+            };
+        </script>
+    </head>
+    <body onload="loadModel()">
+        <section>
+            匿名化する文：<input type="text" id="tokumei_target"><br>
+            匿名化後：<textarea id="tokumei_go" cols="30"></textarea>
+            <input type="submit" value="匿名化実行" onclick="anonymize()">
+        </section>
+    </body>
+</html>
